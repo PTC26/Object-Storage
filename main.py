@@ -1,39 +1,94 @@
-from minio import Minio
-from minio.error import S3Error
+import boto3
 import random
 import string
-import io
+import os
+from dotenv import load_dotenv
 
+load_dotenv()
 
 bucket_name = "my-bucket"
-def create_client(access_key, secret_key):
-    return Minio(
-        "localhost:9000",
-        access_key=access_key,
-        secret_key=secret_key,
-        secure=False
-    )
+
+def create_client():
+    try:
+        return boto3.client(
+            "s3",
+            endpoint_url="http://minio:9000",
+            aws_access_key_id=os.getenv("ACCESS_KEY"),
+            aws_secret_access_key=os.getenv("SECRET_KEY"),
+        )
+    except Exception as e:
+        raise RuntimeError(f"Failed to create S3 client: {e}")
 
 
 def ensure_bucket(client):
     try:
-        if not client.bucket_exists(bucket_name):
-            client.make_bucket(bucket_name)
+        client.head_bucket(Bucket=bucket_name)
+        print("Bucket already exists")
+
+    except Exception:
+        try:
+            client.create_bucket(Bucket=bucket_name)
             print("Bucket created")
-        else:
-            print("Bucket already exists")
-    except S3Error as e:
-        print("Error:", e)
+        except Exception as e:
+            raise RuntimeError(f"Failed to create bucket: {e}")
+
+    try:
+        client.put_bucket_versioning(
+            Bucket=bucket_name,
+            VersioningConfiguration={"Status": "Enabled"}
+        )
+        print("Versioning enabled")
+    except Exception as e:
+        raise RuntimeError(f"Failed to enable versioning: {e}")
 
 
 def random_name():
     return ''.join(random.choices(string.ascii_lowercase, k=8)) + ".txt"
+
 
 def random_data():
     return ''.join(random.choices(
         string.ascii_letters + string.digits,
         k=random.randint(20, 200)
     ))
+
+
+def list_objects(client):
+    try:
+        response = client.list_objects_v2(Bucket=bucket_name)
+
+        if "Contents" not in response:
+            print("No objects found")
+            return []
+
+        objects = response["Contents"]
+
+        print("\nObjects:")
+        for i, obj in enumerate(objects):
+            print(f"{i}: {obj['Key']}")
+
+        return objects
+
+    except Exception as e:
+        raise RuntimeError(f"Failed to list objects: {e}")
+
+
+def select_object(client):
+    objects = list_objects(client)
+
+    if not objects:
+        raise ValueError("No objects available")
+
+    try:
+        index = int(input("Choose index: "))
+
+        if index < 0 or index >= len(objects):
+            raise IndexError("Invalid index")
+
+        return objects[index]["Key"]
+
+    except ValueError:
+        raise ValueError("Index must be a number")
 
 
 def put_object(client, mode="create"):
@@ -43,81 +98,69 @@ def put_object(client, mode="create"):
         else:
             name = select_object(client)
 
-        if not name:
-            return
-
         data = random_data()
 
         client.put_object(
-            bucket_name,
-            name,
-            data=io.BytesIO(data.encode()),
-            length=len(data)
+            Bucket=bucket_name,
+            Key=name,
+            Body=data.encode()
         )
 
         print(f"{mode.capitalize()} done: {name}")
 
-    except S3Error as e:
-        print("Error:", e)
-
-
-def list_objects(client):
-    objects = list(client.list_objects(bucket_name))
-
-    if not objects:
-        print("No objects found")
-        return []
-
-    print("\nObjects:")
-    for i, obj in enumerate(objects):
-        print(f"{i}: {obj.object_name}")
-
-    return objects
-
-
-def select_object(client):
-    objects = list_objects(client)
-
-    if not objects:
-        return None
-
-    index = int(input("Choose index: "))
-    return objects[index].object_name
+    except Exception as e:
+        raise RuntimeError(f"Failed to {mode} object: {e}")
 
 
 def read_object(client):
     try:
         name = select_object(client)
-        if not name:
-            return
 
-        response = client.get_object(bucket_name, name)
+        response = client.get_object(
+            Bucket=bucket_name,
+            Key=name
+        )
+
+        data = response["Body"].read().decode()
+
         print("\nContent:")
-        print(response.read().decode())
+        print(data)
 
-    except S3Error:
-        print("Error reading object")
+    except Exception as e:
+        raise RuntimeError(f"Failed to read object: {e}")
 
 
 def delete_object(client):
     try:
         name = select_object(client)
-        if not name:
-            return
 
-        client.remove_object(bucket_name, name)
-        print(f"Deleted: {name}")
+        client.delete_object(
+            Bucket=bucket_name,
+            Key=name
+        )
 
-    except S3Error:
-        print("Error deleting object")
+        print(f"Deleted (delete marker added if versioning is enabled): {name}")
+
+    except Exception as e:
+        raise RuntimeError(f"Failed to delete object: {e}")
+
+
+def show_versions(client):
+    try:
+        response = client.list_object_versions(Bucket=bucket_name)
+
+        print("\nVersions:")
+        for v in response.get("Versions", []):
+            print(
+                f"Key: {v['Key']} | VersionId: {v['VersionId']} | Latest: {v['IsLatest']}"
+            )
+
+    except Exception as e:
+        raise RuntimeError(f"Failed to list versions: {e}")
 
 
 def menu():
-    print("LOGIN")
-    access_key = input("Enter access key: ")
-    secret_key = input("Enter secret key: ")
-
-    client = create_client(access_key, secret_key)
+    client = create_client()
     ensure_bucket(client)
 
     actions = {
@@ -125,20 +168,20 @@ def menu():
         "2": list_objects,
         "3": read_object,
         "4": delete_object,
-        "5": lambda c: put_object(c, "update")
+        "5": lambda c: put_object(c, "update"),
+        "7": show_versions
     }
 
     while True:
-        menu_text = """
+        print("""
         1 Create
         2 List
         3 Read
         4 Delete
         5 Update
         6 Exit
-        """
-
-        print(menu_text)
+        7 Show Versions 
+        """)
 
         choice = input("Choose: ")
 
