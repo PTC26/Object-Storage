@@ -1,9 +1,6 @@
-FROM python:3.11
-
+FROM python:3.11-slim
 WORKDIR /app
-
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
-
-RUN pip install boto3 python-dotenv
-
-CMD ["python", "main.py"]
+CMD ["python", "minio_task.py"]
